@@ -208,6 +208,8 @@ int parse(FILE *source, FILE *output, const char *filename)
     if (valid && !parse_error) {
         fprintf(out, "%s is a valid SimpCalc program\n", filename);
         return 1;
+    } else {
+        fprintf(out, "%s is not a valid SimpCalc program\n", filename);
+        return 0;
     }
-    return 0;
 }

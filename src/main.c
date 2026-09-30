@@ -28,15 +28,14 @@ static void output_name(char *dest, size_t size, const char *name, const char *r
 static int scan_file(FILE *in, FILE *out)
 {
     Token t;
-    int had_error = 0;
     scanner_init(in);
     do {
         t = gettoken();
-        if (t.type == T_ERROR)
-            had_error = 1;
         print_token(out, &t);
+        if (t.type == T_ERROR)
+            return 0;
     } while (t.type != T_ENDOFFILE);
-    return !had_error;
+    return 1;
 }
 
 /* Scans and parses one input file. */
@@ -73,9 +72,13 @@ static void process_file(const char *dir, const char *name)
     /* First pass runs the scanner */
     scanned_ok = scan_file(in, scan_out);
 
-    /* Second pass runs the parser always */
-    rewind(in);
-    valid = parse(in, parse_out, name);
+    /* Second pass runs the parser only if scanning succeeded */
+    if (scanned_ok) {
+        rewind(in);
+        valid = parse(in, parse_out, name);
+    } else {
+        fprintf(parse_out, "Parsing skipped: lexical error found in %s\n", name);
+    }
 
     printf("%-30s %s\n", name,
            !scanned_ok ? "lexical error" : valid ? "valid" : "syntax error");

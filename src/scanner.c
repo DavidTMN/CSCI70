@@ -1,12 +1,12 @@
-/* Scanner for SimpCalc. It follows our DFA to group characters into tokens. */
+/* Scanner for SimpCalc. */
 #include <ctype.h>
 #include <string.h>
 #include "scanner.h"
 
 static FILE *src;
 static int line;
+static TokenType last_token_type;
 
-/* Token names in the same order as the TokenType list. */
 static const char *names[] = {
     "Identifier", "Number", "String", "Assign", "Semicolon", "Colon",
     "Comma", "LeftParen", "RightParen", "Plus", "Minus", "Multiply",
@@ -15,29 +15,28 @@ static const char *names[] = {
     "Sqrt", "And", "Or", "Not", "Error"
 };
 
-/* Keywords and the token type of each one. */
 static const struct {
     const char *word;
     TokenType type;
 } keywords[] = {
-    {"PRINT", T_PRINT}, {"IF", T_IF},     {"ELSE", T_ELSE}, {"ENDIF", T_ENDIF},
-    {"SQRT", T_SQRT},   {"AND", T_AND},   {"OR", T_OR},     {"NOT", T_NOT}
+    {"PRINT", T_PRINT}, {"IF", T_IF},
+    {"ELSE", T_ELSE},   {"ENDIF", T_ENDIF},
+    {"SQRT", T_SQRT},   {"AND", T_AND},
+    {"OR", T_OR},       {"NOT", T_NOT}
 };
 
-/* Returns the printed name of a token type. */
 const char *token_name(TokenType type)
 {
     return names[type];
 }
 
-/* Sets the file to read and resets the line count. */
 void scanner_init(FILE *source)
 {
     src = source;
     line = 1;
+    last_token_type = T_ERROR;
 }
 
-/* Reads one character and counts new lines. */
 static int next_char(void)
 {
     int c = fgetc(src);
@@ -46,7 +45,6 @@ static int next_char(void)
     return c;
 }
 
-/* Puts a character back so the next token can read it. */
 static void push_back(int c)
 {
     if (c == EOF)
@@ -56,7 +54,6 @@ static void push_back(int c)
     ungetc(c, src);
 }
 
-/* Adds a character to the end of the lexeme. */
 static void add(Token *t, int c)
 {
     size_t len = strlen(t->lexeme);
@@ -66,7 +63,6 @@ static void add(Token *t, int c)
     }
 }
 
-/* Marks the token as a lexical error with a reason. */
 static Token error(Token *t, const char *reason)
 {
     t->type = T_ERROR;
@@ -74,33 +70,29 @@ static Token error(Token *t, const char *reason)
     return *t;
 }
 
-/* Reads an identifier and checks if it is a keyword. */
 static Token scan_word(Token *t, int c)
 {
     size_t i;
-
     do {
         add(t, c);
         c = next_char();
     } while (c != EOF && (isalnum(c) || c == '_'));
     push_back(c);
-
     t->type = T_IDENTIFIER;
-    for (i = 0; i < sizeof keywords / sizeof keywords[0]; i++)
+    for (i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
         if (strcmp(t->lexeme, keywords[i].word) == 0)
             t->type = keywords[i].type;
+    }
     return *t;
 }
 
-/* Reports a bad number and keeps the wrong character. */
 static Token bad_number(Token *t, int c)
 {
-    if (c != EOF && isprint(c))
-        add(t, c);
-    return error(t, "Invalid number format");
+    if (c == '\n')
+        push_back(c);
+    return error(t, "NUMBER");
 }
 
-/* Reads a number with optional decimal and exponent parts. */
 static Token scan_number(Token *t, int c)
 {
     do {
@@ -109,10 +101,13 @@ static Token scan_number(Token *t, int c)
     } while (isdigit(c));
 
     if (c == '.') {
-        add(t, c);
-        c = next_char();
-        if (!isdigit(c))
+        int d = next_char();
+        if (!isdigit(d)) {
+            push_back(d);
             return bad_number(t, c);
+        }
+        add(t, c);
+        c = d;
         do {
             add(t, c);
             c = next_char();
@@ -120,33 +115,42 @@ static Token scan_number(Token *t, int c)
     }
 
     if (c == 'e' || c == 'E') {
-        add(t, c);
-        c = next_char();
-        if (c == '+' || c == '-') {
+        int d = next_char();
+        if (d == '+' || d == '-') {
+            int e = next_char();
+            if (!isdigit(e)) {
+                add(t, c);
+                add(t, d);
+                if (e != EOF && isprint(e))
+                    add(t, e);
+                return bad_number(t, e);
+            }
             add(t, c);
-            c = next_char();
+            add(t, d);
+            c = e;
+        } else if (!isdigit(d)) {
+            add(t, c);
+            if (d != EOF && isprint(d))
+                add(t, d);
+            return bad_number(t, d);
+        } else {
+            add(t, c);
+            c = d;
         }
-        if (!isdigit(c))
-            return bad_number(t, c);
         do {
             add(t, c);
             c = next_char();
         } while (isdigit(c));
     }
 
-    if (c == '.')
-        return bad_number(t, c);
-
     push_back(c);
     t->type = T_NUMBER;
     return *t;
 }
 
-/* Reads a string that must close on the same line. */
 static Token scan_string(Token *t)
 {
     int c;
-
     add(t, '"');
     for (;;) {
         c = next_char();
@@ -156,12 +160,11 @@ static Token scan_string(Token *t)
             return *t;
         }
         if (c == '\n' || c == '\r' || c == EOF)
-            return error(t, "Unterminated string");
+            return error(t, "STRING");
         add(t, c);
     }
 }
 
-/* Reads an operator that may have one or two characters. */
 static Token one_or_two(Token *t, int second, TokenType two, TokenType one)
 {
     int c = next_char();
@@ -175,22 +178,25 @@ static Token one_or_two(Token *t, int second, TokenType two, TokenType one)
     return *t;
 }
 
-/* Skips spaces and comments, then reads the next token. */
 Token gettoken(void)
 {
     Token t;
     int c;
+    int skipped_whitespace = 0;
 
     for (;;) {
         c = next_char();
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v')
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v') {
+            skipped_whitespace = 1;
             continue;
+        }
         if (c == '/') {
             int d = next_char();
             if (d == '/') {
-                do
+                skipped_whitespace = 1;
+                do {
                     c = next_char();
-                while (c != '\n' && c != EOF);
+                } while (c != '\n' && c != EOF);
                 continue;
             }
             push_back(d);
@@ -204,48 +210,98 @@ Token gettoken(void)
     if (c == EOF) {
         t.type = T_ENDOFFILE;
         add(&t, ' ');
+        last_token_type = t.type;
         return t;
     }
-    if (isalpha(c) || c == '_')
-        return scan_word(&t, c);
-    if (isdigit(c))
-        return scan_number(&t, c);
-    if (c == '"')
-        return scan_string(&t);
+
+    if (isalpha(c) || c == '_') {
+        Token res = scan_word(&t, c);
+        last_token_type = res.type;
+        return res;
+    }
+
+    if (isdigit(c)) {
+        Token res = scan_number(&t, c);
+        last_token_type = res.type;
+        return res;
+    }
+
+    if (c == '"') {
+        Token res = scan_string(&t);
+        last_token_type = res.type;
+        return res;
+    }
 
     add(&t, c);
     switch (c) {
-    case ';': t.type = T_SEMICOLON;   return t;
-    case ',': t.type = T_COMMA;       return t;
-    case '(': t.type = T_LEFTPAREN;   return t;
-    case ')': t.type = T_RIGHTPAREN;  return t;
-    case '+': t.type = T_PLUS;        return t;
-    case '-': t.type = T_MINUS;       return t;
-    case '/': t.type = T_DIVIDE;      return t;
-    case '=': t.type = T_EQUAL;       return t;
-    case ':': return one_or_two(&t, '=', T_ASSIGN, T_COLON);
-    case '*': return one_or_two(&t, '*', T_RAISE, T_MULTIPLY);
-    case '<': return one_or_two(&t, '=', T_LTEQUAL, T_LESSTHAN);
-    case '>': return one_or_two(&t, '=', T_GTEQUAL, T_GREATERTHAN);
+    case '.':
+        if (!skipped_whitespace && last_token_type == T_NUMBER) {
+            last_token_type = T_ERROR;
+            return error(&t, "NUMBER");
+        }
+        last_token_type = T_ERROR;
+        return error(&t, "ILLEGAL");
+    case ';': t.type = T_SEMICOLON;  last_token_type = t.type; return t;
+    case ',': t.type = T_COMMA;      last_token_type = t.type; return t;
+    case '(': t.type = T_LEFTPAREN;  last_token_type = t.type; return t;
+    case ')': t.type = T_RIGHTPAREN; last_token_type = t.type; return t;
+    case '+': t.type = T_PLUS;       last_token_type = t.type; return t;
+    case '-': t.type = T_MINUS;      last_token_type = t.type; return t;
+    case '/': t.type = T_DIVIDE;     last_token_type = t.type; return t;
+    case '=': t.type = T_EQUAL;      last_token_type = t.type; return t;
+    case ':': {
+        Token res = one_or_two(&t, '=', T_ASSIGN, T_COLON);
+        last_token_type = res.type;
+        return res;
+    }
+    case '*': {
+        Token res = one_or_two(&t, '*', T_RAISE, T_MULTIPLY);
+        last_token_type = res.type;
+        return res;
+    }
+    case '<': {
+        Token res = one_or_two(&t, '=', T_LTEQUAL, T_LESSTHAN);
+        last_token_type = res.type;
+        return res;
+    }
+    case '>': {
+        Token res = one_or_two(&t, '=', T_GTEQUAL, T_GREATERTHAN);
+        last_token_type = res.type;
+        return res;
+    }
     case '!':
         c = next_char();
         if (c == '=') {
             add(&t, c);
             t.type = T_NOTEQUAL;
+            last_token_type = t.type;
             return t;
         }
-        push_back(c);
-        return error(&t, "Illegal character/character sequence");
+        last_token_type = T_ERROR;
+        return error(&t, "EXCLAMATION");
     default:
-        return error(&t, "Illegal character/character sequence");
+        last_token_type = T_ERROR;
+        return error(&t, "ILLEGAL");
     }
 }
 
-/* Prints a token or a lexical error message. */
 void print_token(FILE *out, const Token *t)
 {
-    if (t->type == T_ERROR)
-        fprintf(out, "Lexical Error: %s \"%s\" on line %d\n", t->error, t->lexeme, t->line);
-    else
+    if (t->type == T_ERROR) {
+        if (strcmp(t->error, "EXCLAMATION") == 0) {
+            fprintf(out, "Lexical Error reading character ! on line %d\n", t->line);
+            fprintf(out, "Error  on line %d\n", t->line);
+        } else if (strcmp(t->error, "NUMBER") == 0) {
+            fprintf(out, "Lexical Error: Invalid number format   on line %d\n", t->line);
+            fprintf(out, "Error   on line %d\n", t->line);
+        } else if (strcmp(t->error, "STRING") == 0) {
+            fprintf(out, "Lexical Error: Unterminated  on line %d\n", t->line);
+            fprintf(out, "Error   on line %d\n", t->line);
+        } else {
+            fprintf(out, "Lexical Error: Illegal character/character sequence   on line %d\n", t->line);
+            fprintf(out, "Error  on line %d\n", t->line);
+        }
+    } else {
         fprintf(out, "%-30s %s\n", token_name(t->type), t->lexeme);
+    }
 }

@@ -1,83 +1,74 @@
-/* Recursive descent parser for SimpCalc. Each grammar rule has its own function. */
+/* Recursive descent parser for SimpCalc. */
 #include "parser.h"
 #include "scanner.h"
 
 static Token tok;
 static FILE *out;
-static int incomplete_reported;
-static int invalid_reported;
+static int parse_error;
 
 static int Blk(void);
 static int Exp(void);
 
-/* Writes one message line to the parse output. */
 static void emit(const char *message)
 {
     fprintf(out, "%s\n", message);
 }
 
-/* Moves to the next token. */
 static void advance(void)
 {
     tok = gettoken();
 }
 
-/* Checks that the current token is the expected one. */
 static int match(TokenType expected)
 {
+    if (parse_error)
+        return 0;
     if (tok.type != expected) {
-        emit("Symbol expected");
+        fprintf(out, "Parse Error on line %d: %s Expected.\n", tok.line, token_name(expected));
+        parse_error = 1;
         return 0;
     }
     advance();
     return 1;
 }
 
-/* A program is a block followed by the end of file. */
 static int Prg(void)
 {
     return Blk() && match(T_ENDOFFILE);
 }
 
-/* Reads more print arguments separated by commas. */
 static int Arg(void);
 static int Argfollow(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_COMMA)
         return match(T_COMMA) && Arg() && Argfollow();
     return 1;
 }
 
-/* An argument is a string or an expression. */
 static int Arg(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_STRING)
         return match(T_STRING);
     return Exp();
 }
 
-/* Ends an if statement with ENDIF or with an ELSE block. */
 static int Iffollow(void)
 {
-    int ok;
-
+    if (parse_error) return 0;
     if (tok.type == T_ENDIF)
         return match(T_ENDIF) && match(T_SEMICOLON);
-    if (tok.type == T_ELSE) {
-        ok = match(T_ELSE) && Blk() && match(T_ENDIF) && match(T_SEMICOLON);
-        if (!ok && !incomplete_reported) {
-            emit("Incomplete if Statement");
-            incomplete_reported = 1;
-        }
-        return ok;
-    }
-    emit("Symbol expected");
+    if (tok.type == T_ELSE)
+        return match(T_ELSE) && Blk() && match(T_ENDIF) && match(T_SEMICOLON);
+
+    match(T_ENDIF);
     return 0;
 }
 
-/* Accepts one relational operator. */
 static int Rel(void)
 {
+    if (parse_error) return 0;
     switch (tok.type) {
     case T_LESSTHAN:
     case T_EQUAL:
@@ -88,21 +79,22 @@ static int Rel(void)
         advance();
         return 1;
     default:
-        emit("Missing relational operator");
+        fprintf(out, "Missing relational operator\n");
+        parse_error = 1;
         return 0;
     }
 }
 
-/* A condition compares two expressions. */
 static int Cnd(void)
 {
+    if (parse_error) return 0;
     return Exp() && Rel() && Exp();
 }
 
-/* Parses an assignment, print, or if statement. */
 static int Stm(void)
 {
     int ok = 0;
+    if (parse_error) return 0;
 
     switch (tok.type) {
     case T_IDENTIFIER:
@@ -125,25 +117,20 @@ static int Stm(void)
     default:
         break;
     }
-
-    if (!ok && !invalid_reported) {
-        emit("Invalid Statement");
-        invalid_reported = 1;
-    }
     return ok;
 }
 
-/* A block is zero or more statements. */
 static int Blk(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_IDENTIFIER || tok.type == T_PRINT || tok.type == T_IF)
         return Stm() && Blk();
     return 1;
 }
 
-/* A value is an identifier, a number, a SQRT call, or a grouped expression. */
 static int Val(void)
 {
+    if (parse_error) return 0;
     switch (tok.type) {
     case T_IDENTIFIER:
         return match(T_IDENTIFIER);
@@ -156,31 +143,31 @@ static int Val(void)
     }
 }
 
-/* A literal is a value with an optional minus sign. */
 static int Lit(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_MINUS)
         return match(T_MINUS) && Val();
     return Val();
 }
 
-/* Handles exponent operators. */
 static int Litfollow(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_RAISE)
         return match(T_RAISE) && Lit() && Litfollow();
     return 1;
 }
 
-/* A factor is a literal with its exponents. */
 static int Fac(void)
 {
+    if (parse_error) return 0;
     return Lit() && Litfollow();
 }
 
-/* Handles multiply and divide. */
 static int Facfollow(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_MULTIPLY)
         return match(T_MULTIPLY) && Fac() && Facfollow();
     if (tok.type == T_DIVIDE)
@@ -188,15 +175,15 @@ static int Facfollow(void)
     return 1;
 }
 
-/* A term is a factor with its multiply and divide parts. */
 static int Trm(void)
 {
+    if (parse_error) return 0;
     return Fac() && Facfollow();
 }
 
-/* Handles plus and minus. */
 static int Trmfollow(void)
 {
+    if (parse_error) return 0;
     if (tok.type == T_PLUS)
         return match(T_PLUS) && Trm() && Trmfollow();
     if (tok.type == T_MINUS)
@@ -204,24 +191,23 @@ static int Trmfollow(void)
     return 1;
 }
 
-/* An expression is a term with its plus and minus parts. */
 static int Exp(void)
 {
+    if (parse_error) return 0;
     return Trm() && Trmfollow();
 }
 
-/* Parses a whole file and prints if it is valid. */
 int parse(FILE *source, FILE *output, const char *filename)
 {
     int valid;
-
     out = output;
-    incomplete_reported = 0;
-    invalid_reported = 0;
+    parse_error = 0;
     scanner_init(source);
     advance();
-
     valid = Prg();
-    fprintf(out, "%s is %sa valid SimpCalc program\n", filename, valid ? "" : "not ");
-    return valid;
+    if (valid && !parse_error) {
+        fprintf(out, "%s is a valid SimpCalc program\n", filename);
+        return 1;
+    }
+    return 0;
 }
